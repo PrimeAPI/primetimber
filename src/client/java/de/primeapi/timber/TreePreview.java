@@ -17,7 +17,7 @@ import java.util.*;
 
 /** Client-side preview overlay for timber. */
 public class TreePreview {
-    private static List<BlockPos> previewBlocks = Collections.emptyList();
+    private static List<BlockPos> previewBlocks = Collections.emptyList(); // now actual destruction blocks
     private static boolean canChop = false;
     private static int tickCounter = 0; // retained but no longer used for action bar
 
@@ -31,7 +31,6 @@ public class TreePreview {
     private static void updatePreview(Minecraft client) {
         LocalPlayer player = client.player;
         if (player == null) { previewBlocks = Collections.emptyList(); return; }
-        // Use keybind state (timber key) - fallback to shift if key not integrated client-side
         boolean keyActive = PrimeTimberClient.isTimberKeyDown();
         if (!keyActive) { previewBlocks = Collections.emptyList(); return; }
         ItemStack stack = player.getMainHandItem();
@@ -41,31 +40,29 @@ public class TreePreview {
         BlockPos origin = bhr.getBlockPos();
         Level level = player.level();
         BlockState originState = level.getBlockState(origin);
-        if (!originState.is(BlockTags.LOGS)) { previewBlocks = Collections.emptyList(); return; }
-        previewBlocks = collect(level, origin);
-        int remaining = stack.getMaxDamage() - stack.getDamageValue();
-        canChop = remaining >= previewBlocks.size();
+        if (!originState.is(BlockTags.LOGS) && !originState.is(BlockTags.CRIMSON_STEMS) && !originState.is(BlockTags.WARPED_STEMS)) { previewBlocks = Collections.emptyList(); return; }
 
-        tickCounter++;
-        if (tickCounter % 10 == 0 && client.player != null && !previewBlocks.isEmpty()) { // every 10 ticks
-            // String msg = (canChop ? "§a" : "§c") + "Timber: " + previewBlocks.size() + " blocks" + (canChop ? " (OK)" : " (Insufficient Durability)" );
-            // client.player.displayClientMessage(net.minecraft.network.chat.Component.literal(msg), true);
-        }
+        // Mirror server selection logic using TreeAnalyzer
+        // Hard cap matches server
+        List<BlockPos> analyzed = TreeAnalyzer.analyze(level, origin, originState, 2048);
+        previewBlocks = analyzed;
+        int remaining = stack.getMaxDamage() - stack.getDamageValue();
+        canChop = !previewBlocks.isEmpty() && remaining >= previewBlocks.size();
+
+        // Remove previous interior particle logic; only edge outline particles
         if (!previewBlocks.isEmpty()) {
-            // Compute bounding box of preview
+            // Compute bounding box only for blocks slated for destruction
             int minX=Integer.MAX_VALUE,minY=Integer.MAX_VALUE,minZ=Integer.MAX_VALUE,maxX=Integer.MIN_VALUE,maxY=Integer.MIN_VALUE,maxZ=Integer.MIN_VALUE;
             for (BlockPos p : previewBlocks) {
                 int x=p.getX(), y=p.getY(), z=p.getZ();
                 if (x<minX) minX=x; if (y<minY) minY=y; if (z<minZ) minZ=z;
                 if (x>maxX) maxX=x; if (y>maxY) maxY=y; if (z>maxZ) maxZ=z;
             }
-            maxX += 1; maxY += 1; maxZ += 1; // include upper faces
-            // Decide particle color
-            int color = canChop ? 0x00FF00 : 0xFF0000; // green or red
+            maxX++; maxY++; maxZ++; // include top/right faces
+            int color = canChop ? 0x00FF00 : 0xFF0000;
             float scale = 1.0f;
             net.minecraft.core.particles.DustParticleOptions dust = new net.minecraft.core.particles.DustParticleOptions(color, scale);
-            // Limit total edge points for performance
-            int maxPointsPerEdge = 64; // adaptively sample long edges
+            int maxPointsPerEdge = 64;
             java.util.function.BiConsumer<BlockPos, BlockPos> edge = (start, end) -> {
                 int dx = end.getX() - start.getX();
                 int dy = end.getY() - start.getY();
@@ -79,7 +76,6 @@ public class TreePreview {
                     client.level.addParticle(dust, x, y, z, 0,0,0);
                 }
             };
-            // 12 edges (using inclusive coords)
             BlockPos A = new BlockPos(minX,minY,minZ);
             BlockPos B = new BlockPos(maxX,minY,minZ);
             BlockPos C = new BlockPos(minX,maxY,minZ);
@@ -92,37 +88,5 @@ public class TreePreview {
             edge.accept(E,F); edge.accept(E,G); edge.accept(E,H);
             edge.accept(C,F); edge.accept(C,H); edge.accept(D,F); edge.accept(D,G); edge.accept(B,G); edge.accept(B,H);
         }
-    }
-
-    private static List<BlockPos> collect(Level level, BlockPos origin) {
-        int max = 1024;
-        Set<BlockPos> visited = new HashSet<>();
-        ArrayDeque<BlockPos> queue = new ArrayDeque<>();
-        List<BlockPos> result = new ArrayList<>();
-        queue.add(origin);
-        while (!queue.isEmpty() && result.size() < max) {
-            BlockPos current = queue.poll();
-            if (!visited.add(current)) continue;
-            BlockState state = level.getBlockState(current);
-            if (state.is(BlockTags.LOGS) || state.is(BlockTags.LEAVES) || state.getBlock() instanceof LeavesBlock) {
-                result.add(current);
-                for (BlockPos n : neighbors(current)) {
-                    if (!visited.contains(n)) {
-                        BlockState ns = level.getBlockState(n);
-                        if (ns.is(BlockTags.LOGS) || ns.is(BlockTags.LEAVES) || ns.getBlock() instanceof LeavesBlock) queue.add(n);
-                    }
-                }
-            }
-        }
-        return result;
-    }
-
-    private static Iterable<BlockPos> neighbors(BlockPos pos) {
-        Set<BlockPos> set = new HashSet<>();
-        for (int dx=-1;dx<=1;dx++) for (int dy=-1;dy<=1;dy++) for (int dz=-1;dz<=1;dz++) {
-            if (dx==0&&dy==0&&dz==0) continue;
-            set.add(pos.offset(dx,dy,dz));
-        }
-        return set;
     }
 }
