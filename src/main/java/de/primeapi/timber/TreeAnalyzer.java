@@ -17,6 +17,8 @@ public final class TreeAnalyzer {
     private static final int UPWARD_LEAF_SCAN = 24; // how far upward to search for leaves if none near base
     private static final int MAX_VISIT = 4096;
     private static final int MIN_NATURAL_LEAVES = 5;
+    private static final int BASE_LOG_SPREAD = 6; // max horizontal spread from trunk center for non-jungle
+    private static final int JUNGLE_LOG_SPREAD = 9; // jungle allows wider branching
 
     private static final Set<String> SOIL_SUFFIXES = Set.of(
             "dirt","grass_block","podzol","rooted_dirt","mud","muddy_mangrove_roots","mycelium","crimson_nylium","warped_nylium"
@@ -36,18 +38,47 @@ public final class TreeAnalyzer {
         if (!hasNaturalLeavesNearby(level, startPos) && !scanUpwardForLeaves(level, base, startState)) return List.of();
         Set<BlockPos> mainCluster = discoverTrunkCluster(level, base, startState);
         BlockPos mainCenter = averagePos(mainCluster);
+        int treeHeightApprox = estimateHeight(level, mainCluster, startState);
+        if (treeHeightApprox > 16 && !isJungle) maxLeafDepth += 4; // allow larger crowns for tall normal trees
+        if (treeHeightApprox > 22) maxLeafDepth += 4; // further extension for very tall (mega spruce etc.)
         List<TrunkSource> sources = findAllTrunkSources(level, mainCenter, startState, mainCluster, hRadius, familyKey);
-        if (sources.size() > 12) return List.of();
-        PartitionResult partition = multiSourcePartition(level, sources, hardCap, startState, hRadius, maxLeafDepth, familyKey);
+        if (sources.size() > 18) return List.of(); // safety cap
+        PartitionResult partition = multiSourcePartition(level, sources, hardCap, startState, hRadius, maxLeafDepth, familyKey, isJungle);
         if (partition == null) return List.of();
         Set<BlockPos> myBlocks = new HashSet<>();
         for (Map.Entry<BlockPos, VisitInfo> e : partition.map.entrySet()) {
             VisitInfo info = e.getValue();
-            if (info.treeId == 0 && !info.contested) myBlocks.add(e.getKey());
+            if (info.treeId == 0 && !info.contested) {
+                BlockState s = level.getBlockState(e.getKey());
+                // Enforce leaf family match
+                if (s.is(BlockTags.LEAVES)) {
+                    if (leafFamilyKey(s).equals(familyKey)) myBlocks.add(e.getKey());
+                } else {
+                    myBlocks.add(e.getKey());
+                }
+            }
         }
-        myBlocks.addAll(mainCluster);
+        myBlocks.addAll(mainCluster); // ensure trunk cluster included
         if (myBlocks.size() > hardCap) return List.of();
         return new ArrayList<>(myBlocks);
+    }
+
+    private static int estimateHeight(Level level, Set<BlockPos> cluster, BlockState family) {
+        int maxY = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE;
+        for (BlockPos p : cluster) { int y=p.getY(); if (y>maxY) maxY=y; if (y<minY) minY=y; }
+        // Attempt to climb upward from highest trunk to find last connected log
+        BlockPos seed = null;
+        for (BlockPos p : cluster) if (p.getY()==maxY) { seed = p; break; }
+        if (seed != null) {
+            BlockPos cur = seed;
+            for (int i=0;i<MAX_HEIGHT;i++) {
+                BlockPos up = cur.above();
+                BlockState us = level.getBlockState(up);
+                if (isSameFamily(family, us)) { maxY = up.getY(); cur = up; } else break;
+            }
+        }
+        return maxY - minY;
     }
 
     private static boolean isLogOrStem(BlockState state) {
@@ -89,7 +120,29 @@ public final class TreeAnalyzer {
         return ""; // unknown
     }
 
+    private static String leafFamilyKey(BlockState state) {
+        String id = state.getBlock().getDescriptionId(); // block.minecraft.oak_leaves
+        int lastDot = id.lastIndexOf('.');
+        String suffix = lastDot>=0? id.substring(lastDot+1) : id;
+        suffix = suffix.replaceFirst("^stripped_", "");
+        if (suffix.endsWith("_leaves")) return suffix.substring(0, suffix.length()-7);
+        return "";
+    }
+
+    private static boolean isLeafCandidate(BlockState s, String trunkFamily) {
+        if (!s.is(BlockTags.LEAVES)) return false;
+        String lf = leafFamilyKey(s);
+        if (!lf.equals(trunkFamily)) return false; // only same family leaves
+        if (s.hasProperty(LeavesBlock.PERSISTENT) && s.hasProperty(LeavesBlock.DISTANCE)) {
+            Boolean persistent = s.getValue(LeavesBlock.PERSISTENT);
+            Integer dist = s.getValue(LeavesBlock.DISTANCE);
+            return !persistent && dist != null && dist <= 6;
+        }
+        return true; // fallback treat as natural if properties missing
+    }
+
     private static boolean scanUpwardForLeaves(Level level, BlockPos base, BlockState family) {
+        String fk = familyKey(family);
         int found = 0;
         for (int dy=0; dy<=UPWARD_LEAF_SCAN && found < MIN_NATURAL_LEAVES; dy++) {
             BlockPos layer = base.above(dy);
@@ -98,7 +151,7 @@ public final class TreeAnalyzer {
                 for (int dz=-radius; dz<=radius && found < MIN_NATURAL_LEAVES; dz++) {
                     BlockPos p = layer.offset(dx,0,dz);
                     BlockState s = level.getBlockState(p);
-                    if (isLeafCandidate(s)) found++;
+                    if (isLeafCandidate(s, fk)) found++;
                 }
             }
         }
@@ -113,6 +166,8 @@ public final class TreeAnalyzer {
     }
 
     private static boolean hasNaturalLeavesNearby(Level level, BlockPos start) {
+        BlockState trunkState = level.getBlockState(start);
+        String fk = familyKey(trunkState);
         int natural = 0;
         int radius = 3;
         for (int dx=-radius; dx<=radius; dx++) {
@@ -120,7 +175,7 @@ public final class TreeAnalyzer {
                 for (int dz=-radius; dz<=radius; dz++) {
                     BlockPos p = start.offset(dx,dy,dz);
                     BlockState s = level.getBlockState(p);
-                    if (isLeafCandidate(s)) {
+                    if (isLeafCandidate(s, fk)) {
                         natural++;
                         if (natural >= MIN_NATURAL_LEAVES) return true;
                     }
@@ -128,17 +183,6 @@ public final class TreeAnalyzer {
             }
         }
         return false;
-    }
-
-    private static boolean isLeafCandidate(BlockState s) {
-        if (!s.is(BlockTags.LEAVES)) return false;
-        // Must be natural: persistent=false distance<=6 if properties exist
-        if (s.hasProperty(LeavesBlock.PERSISTENT) && s.hasProperty(LeavesBlock.DISTANCE)) {
-            Boolean persistent = s.getValue(LeavesBlock.PERSISTENT);
-            Integer dist = s.getValue(LeavesBlock.DISTANCE);
-            return !persistent && dist != null && dist <= 6;
-        }
-        return true; // fallback treat as natural if properties missing
     }
 
     private static Set<BlockPos> discoverTrunkCluster(Level level, BlockPos base, BlockState family) {
@@ -171,21 +215,22 @@ public final class TreeAnalyzer {
         List<TrunkSource> sources = new ArrayList<>();
         sources.add(new TrunkSource(0, mainCluster, averagePos(mainCluster)));
         int nextId = 1;
+        // broaden vertical scan: allow bases up to 8 above and 4 below center
         for (int dx=-hRadius; dx<=hRadius; dx++) {
             for (int dz=-hRadius; dz<=hRadius; dz++) {
-                for (int dy=0; dy<=6; dy++) {
+                for (int dy=-4; dy<=8; dy++) {
                     BlockPos p = center.offset(dx, dy, dz);
                     BlockState s = level.getBlockState(p);
                     if (!sameFamily(family, s)) continue;
                     BlockPos below = p.below();
-                    if (sameFamily(family, level.getBlockState(below))) continue;
+                    if (sameFamily(family, level.getBlockState(below))) continue; // not a base
                     if (!validSoil(level.getBlockState(below))) continue;
                     if (mainCluster.contains(p)) continue;
                     Set<BlockPos> cluster = discoverTrunkCluster(level, p, family);
                     BlockPos cCenter = averagePos(cluster);
                     boolean duplicate = false;
                     for (TrunkSource ts : sources) {
-                        if (ts.center.distSqr(cCenter) < 2) { duplicate = true; break; }
+                        if (ts.center.distSqr(cCenter) < 3) { duplicate = true; break; }
                     }
                     if (!duplicate) sources.add(new TrunkSource(nextId++, cluster, cCenter));
                 }
@@ -194,28 +239,37 @@ public final class TreeAnalyzer {
         return sources;
     }
 
-    private static PartitionResult multiSourcePartition(Level level, List<TrunkSource> sources, int hardCap, BlockState family, int hRadius, int maxLeafDepth, String familyKey) {
+    private static PartitionResult multiSourcePartition(Level level, List<TrunkSource> sources, int hardCap, BlockState family, int hRadius, int maxLeafDepth, String familyKey, boolean jungle) {
         Map<BlockPos, VisitInfo> visited = new HashMap<>();
         ArrayDeque<Node> q = new ArrayDeque<>();
+        Map<Integer, BlockPos> centers = new HashMap<>();
         for (TrunkSource src : sources) {
+            centers.put(src.id, src.center);
             for (BlockPos pos : src.cluster) {
                 q.add(new Node(pos, src.id, 0));
                 visited.put(pos, new VisitInfo(src.id,0,false));
             }
         }
-        boolean diagLogs = "jungle".equals(familyKey); // jungle logs can connect diagonally
-        BlockPos mainCenter = sources.get(0).center;
+        int logSpread = jungle ? JUNGLE_LOG_SPREAD : BASE_LOG_SPREAD;
         while (!q.isEmpty() && visited.size() < MAX_VISIT && visited.size() < hardCap) {
             Node node = q.poll();
             BlockState state = level.getBlockState(node.pos);
             boolean isLog = isLogOrStem(state);
-            for (BlockPos n : adjacency(node.pos, isLog, diagLogs)) {
-                if (!inBounds(n, mainCenter, hRadius)) continue;
+            for (BlockPos n : adjacency(node.pos, true)) { // always 26-neighbor for logs/leaves pathing
+                if (!inBounds(n, centers.get(0), hRadius)) continue;
                 BlockState ns = level.getBlockState(n);
-                boolean traversable = (isLogOrStem(ns) && isSameFamily(family, ns)) || isLeafCandidate(ns);
-                if (!traversable) continue;
+                boolean nIsLog = isLogOrStem(ns) && isSameFamily(family, ns);
+                boolean nIsLeaf = isLeafCandidate(ns, familyKey);
+                if (!(nIsLog || nIsLeaf)) continue;
+                // Limit horizontal spread for logs relative to their own trunk center
+                if (nIsLog) {
+                    BlockPos center = centers.get(node.treeId);
+                    int dx = n.getX() - center.getX();
+                    int dz = n.getZ() - center.getZ();
+                    if (dx*dx + dz*dz > logSpread*logSpread) continue; // too far from trunk cluster
+                }
                 int nextDist = node.dist + 1;
-                if (!isLogOrStem(ns) && nextDist > maxLeafDepth) continue;
+                if (nIsLeaf && nextDist > maxLeafDepth) continue;
                 VisitInfo existing = visited.get(n);
                 if (existing == null) {
                     visited.put(n, new VisitInfo(node.treeId, nextDist, false));
@@ -239,17 +293,12 @@ public final class TreeAnalyzer {
         return dx*dx + dz*dz <= hRadius*hRadius;
     }
 
-    private static List<BlockPos> adjacency(BlockPos pos, boolean isLog, boolean diagLogs) {
-        if (isLog && diagLogs) {
-            List<BlockPos> list = new ArrayList<>(26);
-            for (int dx=-1; dx<=1; dx++) for (int dy=-1; dy<=1; dy++) for (int dz=-1; dz<=1; dz++) {
-                if (dx==0 && dy==0 && dz==0) continue;
-                list.add(pos.offset(dx,dy,dz));
-            }
-            return list;
+    private static List<BlockPos> adjacency(BlockPos pos, boolean diag) {
+        List<BlockPos> list = new ArrayList<>(26);
+        for (int dx=-1; dx<=1; dx++) for (int dy=-1; dy<=1; dy++) for (int dz=-1; dz<=1; dz++) {
+            if (dx==0 && dy==0 && dz==0) continue;
+            list.add(pos.offset(dx,dy,dz));
         }
-        List<BlockPos> list = new ArrayList<>(6);
-        list.add(pos.above()); list.add(pos.below()); list.add(pos.north()); list.add(pos.south()); list.add(pos.east()); list.add(pos.west());
         return list;
     }
 
