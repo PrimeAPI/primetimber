@@ -47,7 +47,12 @@ public class TreePreview {
         List<BlockPos> analyzed = TreeAnalyzer.analyze(level, origin, originState, 2048);
         previewBlocks = analyzed;
         int remaining = stack.getMaxDamage() - stack.getDamageValue();
-        canChop = !previewBlocks.isEmpty() && remaining >= previewBlocks.size();
+        int logCost = 0;
+        for (BlockPos p : previewBlocks) {
+            BlockState bs = level.getBlockState(p);
+            if (bs.is(BlockTags.LOGS) || bs.is(BlockTags.CRIMSON_STEMS) || bs.is(BlockTags.WARPED_STEMS)) logCost++;
+        }
+        canChop = !previewBlocks.isEmpty() && remaining >= logCost;
 
         // Remove previous interior particle logic; only edge outline particles
         if (!previewBlocks.isEmpty()) {

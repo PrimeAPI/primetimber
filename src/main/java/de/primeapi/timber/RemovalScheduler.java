@@ -7,8 +7,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.level.block.state.BlockState;
-
-import java.util.*;
+import java.util.*; // added for Map, HashMap, List, UUID, Iterator
 
 /**
  * Schedules animated removal of tree blocks over subsequent server ticks.
@@ -53,7 +52,7 @@ public class RemovalScheduler {
                     BlockState state = task.level.getBlockState(pos);
                     if (!state.isAir()) {
                         task.level.destroyBlock(pos, true, task.player);
-                        TreeChopper.applyDurability(task.tool, task.player);
+                        TreeChopper.applyDurability(task.tool, task.player, state); // durability only for logs
                         if (task.tool.isEmpty()) {
                             // Tool broke; play sound and abort remaining
                             task.player.playSound(SoundEvents.ANVIL_BREAK, 1f, 1f);

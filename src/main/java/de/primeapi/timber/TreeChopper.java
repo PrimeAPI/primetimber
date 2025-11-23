@@ -32,10 +32,17 @@ public class TreeChopper {
             ItemStack tool = sp.getMainHandItem();
             if (tool.isEmpty() || !tool.isDamageableItem()) return true;
 
+            // Count only logs/stems for durability cost
+            int logCost = 0;
+            for (BlockPos bp : blocks) {
+                BlockState bs = level.getBlockState(bp);
+                if (isLogOrStem(bs)) logCost++;
+            }
+
             int remaining = tool.getMaxDamage() - tool.getDamageValue();
-            if (remaining < totalBlocks) {
+            if (remaining < logCost) {
                 sp.playSound(SoundEvents.ANVIL_LAND, 1.0f, 0.8f);
-                return true;
+                return true; // not enough durability for logs alone
             }
 
             RemovalScheduler.schedule(sp, level, blocks, tool);
@@ -52,7 +59,8 @@ public class TreeChopper {
     }
 
     // Durability application helper invoked by scheduler per block
-    static void applyDurability(ItemStack stack, ServerPlayer player) {
+    static void applyDurability(ItemStack stack, ServerPlayer player, BlockState state) {
+        if (!isLogOrStem(state)) return; // only logs consume durability now
         if (stack.isEmpty() || !stack.isDamageableItem()) return;
         stack.hurtAndBreak(1, player, EquipmentSlot.MAINHAND);
     }
