@@ -4,27 +4,90 @@
 # against bad commits.
 
 name: build
-on: [pull_request, push]
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    concurrency: primetimber-build-${{ github.ref }}
     steps:
-      - name: checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
-      - name: validate gradle wrapper
+
+      - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@v4
-      - name: setup jdk
+
+      - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'microsoft'
-      - name: make gradle wrapper executable
+          cache: gradle
+
+      - name: Setup Gradle caching
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          add-job-summary: false
+
+      - name: Make gradle wrapper executable
         run: chmod +x ./gradlew
-      - name: build
-        run: ./gradlew build
-      - name: capture build artifacts
+
+      - name: Build (no tests)
+        run: ./gradlew build -x test --stacktrace
+
+      - name: List build outputs
+        run: ls -l build/libs || true
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2 | tr -d '\r')
+          if [ -z "$VERSION" ]; then echo "Could not determine mod_version"; exit 1; fi
+          echo "mod_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected mod version: $VERSION"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          BASE_TAG="v${{ steps.version.outputs.mod_version }}"
+          git fetch --tags || true
+          if git rev-parse -q --verify "refs/tags/$BASE_TAG"; then
+            TAG="${BASE_TAG}-build-${GITHUB_RUN_NUMBER}"
+            echo "Base tag exists, using $TAG"
+          else
+            TAG="$BASE_TAG"
+            echo "Using new tag $TAG"
+          fi
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Artifacts
-          path: build/libs/
+          name: primetimber-${{ steps.version.outputs.mod_version }}
+          path: build/libs/*.jar
+          if-no-files-found: warn
+
+      - name: Create GitHub Release (master only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: PrimeTimber ${{ steps.tag.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          files: build/libs/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "Build complete for version ${{ steps.version.outputs.mod_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Tag chosen: ${{ steps.tag.outputs.tag_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "Released: ${{ github.ref == 'refs/heads/master' }}" >> $GITHUB_STEP_SUMMARY
