@@ -3,13 +3,14 @@
 	"id": "primetimber",
 	"version": "${version}",
 	"name": "PrimeTimber",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "Advaned Timber Mod with better timber selection algorithm and visualization.",
 	"authors": [
-		"Me!"
+		"PrimeAPI"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"homepage": "https://github.com/PrimeAPI",
+		"sources": "https://github.com/PrimeAPI",
+        "issues": "https://github.com/PrimeAPI/primetimber/issues"
 	},
 	"license": "CC0-1.0",
 	"icon": "assets/primetimber/icon.png",
@@ -37,8 +38,5 @@
 		"minecraft": "~1.21.10",
 		"java": ">=21",
 		"fabric-api": "*"
-	},
-	"suggests": {
-		"another-mod": "*"
 	}
 }
