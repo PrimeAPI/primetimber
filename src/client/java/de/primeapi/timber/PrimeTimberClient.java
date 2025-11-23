@@ -10,6 +10,7 @@ import org.lwjgl.glfw.GLFW;
 public class PrimeTimberClient implements ClientModInitializer {
 	private static KeyMapping timberKey;
 	private static boolean lastSentState = false;
+	public static boolean isTimberKeyDown() { return timberKey != null && timberKey.isDown(); }
 	@Override
 	public void onInitializeClient() {
 		// Codec registered server-side; no need here.
@@ -28,5 +29,6 @@ public class PrimeTimberClient implements ClientModInitializer {
 				lastSentState = pressed;
 			}
 		});
+		TreePreview.init();
 	}
 }
